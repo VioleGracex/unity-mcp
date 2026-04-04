@@ -1,6 +1,7 @@
 #nullable disable
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -49,11 +50,22 @@ namespace MCPForUnity.Editor.Tools
             string name = p.GetString("name");
             JToken parentToken = p.GetToken("parent");
 
-            // 1. Find Parent
+            // 1. Find Parent (Intelligent)
             GameObject parentGo = null;
             if (parentToken != null)
             {
                 parentGo = MCPForUnity.Editor.Tools.GameObjects.ManageGameObjectCommon.FindObjectInternal(parentToken, "by_id_or_name_or_path");
+            }
+            
+            // If no parent specified, check if current selection is a UI element
+            if (parentGo == null)
+            {
+                var selected = Selection.activeGameObject;
+                if (selected != null && selected.GetComponent<RectTransform>() != null)
+                {
+                    parentGo = selected;
+                    McpLog.Info($"[ManageUGUI] Using selected object '{parentGo.name}' as parent.");
+                }
             }
 
             // 2. Ensure Canvas if no parent or parent is not UI
@@ -106,25 +118,17 @@ namespace MCPForUnity.Editor.Tools
             uiGo.transform.localScale = Vector3.one;
             uiGo.transform.localPosition = Vector3.zero;
 
-            // 5. Apply Anchor Preset if provided or default for Panel
-            string preset = p.GetString("anchor_preset", "anchorPreset")?.ToLowerInvariant();
-            if (string.IsNullOrEmpty(preset) && type.ToLowerInvariant() == "panel")
-            {
-                preset = "stretch_stretch";
-            }
-            
-            if (!string.IsNullOrEmpty(preset))
-            {
-                ApplyAnchorPreset(uiGo.GetComponent<RectTransform>(), preset);
-            }
+            // Ensure RectTransform
+            RectTransform rt = uiGo.GetComponent<RectTransform>();
+            if (rt == null) rt = uiGo.AddComponent<RectTransform>();
 
-            // 6. Apply Visual Properties if provided
+            // 5. Apply Layout & Visuals
+            ApplyLayoutProperties(rt, p);
             ApplyVisualProperties(uiGo, p);
 
-            // 7. Special case: Button stretching child text
+            // 6. Special case: Button stretching child text
             if (type.ToLowerInvariant() == "button")
             {
-                // Find any text component (legacy or TMPro)
                 var rtChildText = uiGo.GetComponentInChildren<Text>()?.rectTransform;
                 if (rtChildText == null) {
                     var tmproType = Type.GetType("TMPro.TMP_Text, Unity.TextMeshPro") ?? Type.GetType("TMPro.TextMeshProUGUI, Unity.TextMeshPro");
@@ -153,18 +157,29 @@ namespace MCPForUnity.Editor.Tools
             if (targetGo == null) return new ErrorResponse("Target UI element not found.");
             
             RectTransform rt = targetGo.GetComponent<RectTransform>();
-            if (rt == null) return new ErrorResponse("Target element does not have a RectTransform.");
+            if (rt == null) return new ErrorResponse("Target element does not have a RectTransform. UI tools only work on UI elements.");
 
             Undo.RecordObject(targetGo, "Modify UGUI Element");
             Undo.RecordObject(rt, "Modify UI Layout");
 
-            // Apply Layout
+            ApplyLayoutProperties(rt, p);
+            ApplyVisualProperties(targetGo, p);
+
+            EditorUtility.SetDirty(targetGo);
+            EditorUtility.SetDirty(rt);
+            return new SuccessResponse($"Element '{targetGo.name}' updated successfully.", GameObjectSerializer.GetGameObjectData(targetGo));
+        }
+
+        private static void ApplyLayoutProperties(RectTransform rt, ToolParams p)
+        {
+            // Anchor Preset
             string preset = p.GetString("anchor_preset", "anchorPreset")?.ToLowerInvariant();
             if (!string.IsNullOrEmpty(preset))
             {
                 ApplyAnchorPreset(rt, preset);
             }
 
+            // Direct Transform Properties
             Vector2? sizeDelta = VectorParsing.ParseVector2(p.GetToken("size_delta", "sizeDelta"));
             if (sizeDelta.HasValue) rt.sizeDelta = sizeDelta.Value;
 
@@ -178,16 +193,77 @@ namespace MCPForUnity.Editor.Tools
                 rt.pivot = new Vector2(pivotX ?? rt.pivot.x, pivotY ?? rt.pivot.y);
             }
 
-            // Apply Visuals
-            ApplyVisualProperties(targetGo, p);
+            // Layout Group Support
+            string layoutGroup = p.GetString("layout_group", "layoutGroup");
+            if (!string.IsNullOrEmpty(layoutGroup))
+            {
+                ApplyLayoutGroup(rt.gameObject, layoutGroup, p);
+            }
+        }
 
-            EditorUtility.SetDirty(targetGo);
-            EditorUtility.SetDirty(rt);
-            return new SuccessResponse($"Element '{targetGo.name}' updated successfully.", GameObjectSerializer.GetGameObjectData(targetGo));
+        private static void ApplyLayoutGroup(GameObject go, string type, ToolParams p)
+        {
+            HorizontalOrVerticalLayoutGroup group = null;
+            GridLayoutGroup grid = null;
+
+            switch (type.ToLowerInvariant())
+            {
+                case "horizontal":
+                    group = go.GetComponent<HorizontalLayoutGroup>() ?? go.AddComponent<HorizontalLayoutGroup>();
+                    break;
+                case "vertical":
+                    group = go.GetComponent<VerticalLayoutGroup>() ?? go.AddComponent<VerticalLayoutGroup>();
+                    break;
+                case "grid":
+                    grid = go.GetComponent<GridLayoutGroup>() ?? go.AddComponent<GridLayoutGroup>();
+                    break;
+                case "none":
+                case "remove":
+                    foreach (var lg in go.GetComponents<LayoutGroup>()) UnityEngine.Object.DestroyImmediate(lg);
+                    return;
+            }
+
+            if (group != null)
+            {
+                float? spacing = p.GetFloat("spacing");
+                if (spacing.HasValue) group.spacing = spacing.Value;
+
+                string align = p.GetString("child_alignment", "childAlignment");
+                if (!string.IsNullOrEmpty(align) && Enum.TryParse<TextAnchor>(align, true, out var result))
+                    group.childAlignment = result;
+
+                bool? forceExpandW = p.GetBool("child_force_expand_width", "childForceExpandWidth");
+                if (forceExpandW.HasValue) group.childForceExpandWidth = forceExpandW.Value;
+                
+                bool? forceExpandH = p.GetBool("child_force_expand_height", "childForceExpandHeight");
+                if (forceExpandH.HasValue) group.childForceExpandHeight = forceExpandH.Value;
+
+                bool? controlW = p.GetBool("child_control_width", "childControlWidth");
+                if (controlW.HasValue) group.childControlWidth = controlW.Value;
+
+                bool? controlH = p.GetBool("child_control_height", "childControlHeight");
+                if (controlH.HasValue) group.childControlHeight = controlH.Value;
+            }
+
+            if (grid != null)
+            {
+                Vector2? cellSize = VectorParsing.ParseVector2(p.GetToken("cell_size", "cellSize"));
+                if (cellSize.HasValue) grid.cellSize = cellSize.Value;
+
+                Vector2? spacing = VectorParsing.ParseVector2(p.GetToken("spacing"));
+                if (spacing.HasValue) grid.spacing = spacing.Value;
+
+                string align = p.GetString("child_alignment", "childAlignment");
+                if (!string.IsNullOrEmpty(align) && Enum.TryParse<TextAnchor>(align, true, out var result))
+                    grid.childAlignment = result;
+            }
         }
 
         private static void ApplyVisualProperties(GameObject go, ToolParams p)
         {
+            // Color Extraction (Shared)
+            Color? mainColor = ParseColor(p.GetString("color"));
+
             // Image / RawImage / Panel properties
             Image img = go.GetComponent<Image>();
             RawImage rawImg = go.GetComponent<RawImage>();
@@ -198,10 +274,11 @@ namespace MCPForUnity.Editor.Tools
                 if (!string.IsNullOrEmpty(spritePath))
                 {
                     img.sprite = AssetDatabase.LoadAssetAtPath<Sprite>(AssetPathUtility.SanitizeAssetPath(spritePath));
+                    // Auto-set preserved aspect if it's a new sprite and not explicitly disabled
+                    if (img.sprite != null && !p.Has("preserve_aspect")) img.preserveAspect = true;
                 }
                 
-                Color? color = ParseColor(p.GetString("color"));
-                if (color.HasValue) img.color = color.Value;
+                if (mainColor.HasValue) img.color = mainColor.Value;
                 
                 bool? raycast = p.GetBool("raycast_target", "raycastTarget");
                 if (raycast.HasValue) img.raycastTarget = raycast.Value;
@@ -217,8 +294,7 @@ namespace MCPForUnity.Editor.Tools
                     rawImg.texture = AssetDatabase.LoadAssetAtPath<Texture>(AssetPathUtility.SanitizeAssetPath(texPath));
                 }
                 
-                Color? color = ParseColor(p.GetString("color"));
-                if (color.HasValue) rawImg.color = color.Value;
+                if (mainColor.HasValue) rawImg.color = mainColor.Value;
             }
 
             // Text properties
@@ -226,7 +302,6 @@ namespace MCPForUnity.Editor.Tools
             int? fontSize = p.GetInt("font_size", "fontSize");
             string fontPath = p.GetString("font");
             string align = p.GetString("alignment");
-            Color? textColor = ParseColor(p.GetString("color"));
 
             // Legacy Text
             Text txt = go.GetComponent<Text>();
@@ -243,7 +318,7 @@ namespace MCPForUnity.Editor.Tools
                     if (Enum.TryParse<TextAnchor>(align, true, out var result))
                         txt.alignment = result;
                 }
-                if (textColor.HasValue) txt.color = textColor.Value;
+                if (mainColor.HasValue) txt.color = mainColor.Value;
             }
 
             // TextMeshPro support via reflection
@@ -255,14 +330,46 @@ namespace MCPForUnity.Editor.Tools
                 {
                     if (text != null) SetPropertyValue(tmpro, "text", text);
                     if (fontSize.HasValue) SetPropertyValue(tmpro, "fontSize", (float)fontSize.Value);
-                    if (textColor.HasValue) SetPropertyValue(tmpro, "color", textColor.Value);
+                    if (mainColor.HasValue) SetPropertyValue(tmpro, "color", mainColor.Value);
+                    
                     if (!string.IsNullOrEmpty(align))
                     {
-                        // Alignment in TMPro is a different enum (TMP_TextAlignmentOptions)
-                        // For simplicity, we'll try to map common ones or just skip for now
+                        // Map alignment to TMPro enum if possible
+                        // TMPro values: Left, Center, Right, Justified, Flush, Geometry
+                        // Or combined like TopLeft
+                        object tmproAlign = MapTMPAlignment(align);
+                        if (tmproAlign != null) SetPropertyValue(tmpro, "alignment", tmproAlign);
                     }
+
+                    bool? autoSize = p.GetBool("auto_size", "autoSize") ?? p.GetBool("enableAutoSizing");
+                    if (autoSize.HasValue) SetPropertyValue(tmpro, "enableAutoSizing", autoSize.Value);
                 }
             }
+        }
+
+        private static object MapTMPAlignment(string align)
+        {
+            var type = Type.GetType("TMPro.TextAlignmentOptions, Unity.TextMeshPro");
+            if (type == null) return null;
+
+            // Try direct parse
+            if (Enum.TryParse(type, align, true, out var result)) return result;
+
+            // Try mapping Legacy TextAnchor to TMP
+            switch (align.ToLowerInvariant())
+            {
+                case "upperleft": case "topleft": return Enum.Parse(type, "TopLeft");
+                case "uppercenter": case "topcenter": return Enum.Parse(type, "Top");
+                case "upperright": case "topright": return Enum.Parse(type, "TopRight");
+                case "middleleft": return Enum.Parse(type, "Left");
+                case "middlecenter": case "center": return Enum.Parse(type, "Center");
+                case "middleright": return Enum.Parse(type, "Right");
+                case "lowerleft": case "bottomleft": return Enum.Parse(type, "BottomLeft");
+                case "lowercenter": case "bottomcenter": return Enum.Parse(type, "Bottom");
+                case "lowerright": case "bottomright": return Enum.Parse(type, "BottomRight");
+            }
+
+            return null;
         }
 
         private static void SetPropertyValue(object obj, string propertyName, object value)
@@ -277,6 +384,22 @@ namespace MCPForUnity.Editor.Tools
         private static Color? ParseColor(string hex)
         {
             if (string.IsNullOrEmpty(hex)) return null;
+
+            // Handle named colors
+            switch (hex.ToLowerInvariant())
+            {
+                case "white": return Color.white;
+                case "black": return Color.black;
+                case "red": return Color.red;
+                case "green": return Color.green;
+                case "blue": return Color.blue;
+                case "yellow": return Color.yellow;
+                case "cyan": return Color.cyan;
+                case "magenta": return Color.magenta;
+                case "gray": case "grey": return Color.gray;
+                case "clear": case "transparent": return Color.clear;
+            }
+
             if (ColorUtility.TryParseHtmlString(hex, out Color color)) return color;
             if (ColorUtility.TryParseHtmlString("#" + hex, out color)) return color;
             return null;
@@ -368,34 +491,34 @@ namespace MCPForUnity.Editor.Tools
                 
                 case "horiz_stretch_top": 
                     rt.anchorMin = new Vector2(0, 1); rt.anchorMax = Vector2.one; rt.pivot = new Vector2(0.5f, 1); 
-                    rt.offsetMin = new Vector2(0, 0); rt.offsetMax = new Vector2(0, 0); // Logic: Full horiz stretch should have 0 horiz offsets
+                    rt.offsetMin = new Vector2(0, rt.offsetMin.y); rt.offsetMax = new Vector2(0, rt.offsetMax.y);
                     break;
                 case "horiz_stretch_middle": 
                     rt.anchorMin = new Vector2(0, 0.5f); rt.anchorMax = new Vector2(1, 0.5f); rt.pivot = new Vector2(0.5f, 0.5f); 
-                    rt.offsetMin = new Vector2(0, 0); rt.offsetMax = new Vector2(0, 0);
+                    rt.offsetMin = new Vector2(0, rt.offsetMin.y); rt.offsetMax = new Vector2(0, rt.offsetMax.y);
                     break;
                 case "horiz_stretch_bottom": 
                     rt.anchorMin = Vector2.zero; rt.anchorMax = new Vector2(1, 0); rt.pivot = new Vector2(0.5f, 0); 
-                    rt.offsetMin = new Vector2(0, 0); rt.offsetMax = new Vector2(0, 0);
+                    rt.offsetMin = new Vector2(0, rt.offsetMin.y); rt.offsetMax = new Vector2(0, rt.offsetMax.y);
                     break;
                 case "vert_stretch_left": 
                     rt.anchorMin = Vector2.zero; rt.anchorMax = new Vector2(0, 1); rt.pivot = new Vector2(0, 0.5f); 
-                    rt.offsetMin = new Vector2(0, 0); rt.offsetMax = new Vector2(0, 0);
+                    rt.offsetMin = new Vector2(rt.offsetMin.x, 0); rt.offsetMax = new Vector2(rt.offsetMax.x, 0);
                     break;
                 case "vert_stretch_center": 
                     rt.anchorMin = new Vector2(0.5f, 0); rt.anchorMax = new Vector2(0.5f, 1); rt.pivot = new Vector2(0.5f, 0.5f); 
-                    rt.offsetMin = new Vector2(0, 0); rt.offsetMax = new Vector2(0, 0);
+                    rt.offsetMin = new Vector2(rt.offsetMin.x, 0); rt.offsetMax = new Vector2(rt.offsetMax.x, 0);
                     break;
                 case "vert_stretch_right": 
                     rt.anchorMin = new Vector2(1, 0); rt.anchorMax = Vector2.one; rt.pivot = new Vector2(1, 0.5f); 
-                    rt.offsetMin = new Vector2(0, 0); rt.offsetMax = new Vector2(0, 0);
+                    rt.offsetMin = new Vector2(rt.offsetMin.x, 0); rt.offsetMax = new Vector2(rt.offsetMax.x, 0);
                     break;
             }
             
             // --- Robustness Fix ---
-            // Nudge Unity to recognize the change and update the Editor UI
             EditorUtility.SetDirty(rt);
             UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(rt);
         }
     }
 }
+

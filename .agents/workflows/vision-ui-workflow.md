@@ -9,7 +9,7 @@ Follow these steps when a user provides a reference image and asks to recreate i
 ## 1. Scene & Asset Analysis
 Before building, understand the target environment and available tools:
 - **List UI Assets**: Search for sprites and fonts that match the visual style.
-  - `manage_asset action="search" search_pattern="t:Sprite"`
+  - `find_ui_sprites searchPattern="Button"`
   - `manage_asset action="search" search_pattern="t:Font"`
 - **Check Canvas**: Ensure a Canvas exists with a proper `CanvasScaler` (1920x1080 is default).
   - `manage_ugui action="ensure_canvas"`
@@ -19,12 +19,13 @@ Analyze the reference image and identify the hierarchy:
 - **Background/Container**: Large panels or full-screen images.
 - **Layout Groups**: Items arranged in rows (Horizontal) or columns (Vertical).
 - **Core Elements**: Buttons, Icons (Image), Labels (Text), Input Fields.
-- **Properties**: Estimate colors (Hex), font sizes, and anchor positions.
+- **Properties**: Estimate colors (Hex or names), font sizes, and anchor positions.
 
 ## 3. Implementation (Bottom-Up or Top-Down)
-Use the enhanced `manage_ugui` tool to build the hierarchy. **Combine properties into single calls** for efficiency.
+**IMPORTANT: ALWAYS use `manage_ugui` for UI elements.** NEVER use `manage_gameobject` to create UI, as it defaults to a standard `Transform` instead of a `RectTransform`.
 
 ### Step A: Create the Root Container
+The tool now supports intelligent parenting. If no parent is specified, it will try to use the selected UI element or default to the Canvas.
 ```json
 {
   "action": "create_element",
@@ -37,7 +38,6 @@ Use the enhanced `manage_ugui` tool to build the hierarchy. **Combine properties
 ```
 
 ### Step B: Add Visual Elements with Assets
-When you see an asset in the image, map it to a project asset:
 ```json
 {
   "action": "create_element",
@@ -51,28 +51,26 @@ When you see an asset in the image, map it to a project asset:
 }
 ```
 
-### Step C: Functional Styling
+### Step C: Using Layout Groups
+You can now add layout groups directly during creation or via `modify_element`.
 ```json
 {
-  "action": "create_element",
-  "type": "Text",
-  "name": "Title",
-  "parent": "MainContainer",
-  "text": "SETTINGS",
-  "color": "white",
-  "fontSize": 24,
-  "alignment": "MiddleCenter",
-  "anchor_preset": "horiz_stretch_top",
-  "size_delta": {"x": 0, "y": 50}
+  "action": "modify_element",
+  "target": "MainContainer",
+  "layout_group": "vertical",
+  "spacing": 10,
+  "child_alignment": "MiddleCenter",
+  "child_control_width": true,
+  "child_force_expand_width": true
 }
 ```
 
 ## 4. Refinement
-- **Iterative Tweaks**: Use `action="modify_element"` to adjust spacing or colors after the initial creation.
-- **Layout Components**: Add `VerticalLayoutGroup` or `HorizontalLayoutGroup` using `manage_components` if the list of items is dynamic.
-- **Validation**: Use `manage_camera action="screenshot"` to verify the result against the reference.
+- **Iterative Tweaks**: Use `action="modify_element"` to adjust spacing or colors.
+- **Color Extraction**: Use vision to get exact hex codes. The tool supports `#RRGGBB` or common names like `white`, `black`, `red`.
+- **Validation**: Use `manage_camera action="screenshot"` to verify the result.
 
 ## 5. Tips for Success
-- **Slicing**: If an image looks stretched, check if the Sprite has a Border (9-slicing) set in its import settings.
-- **Hierarchy**: Keep the hierarchy clean. Use "Empty" UI types for grouping if no visual component is needed.
-- **Scale**: UGUI elements should almost always have a Scale of (1, 1, 1). Use `size_delta` for dimensions.
+- **RectTransform Only**: `manage_ugui` enforces `RectTransform`. If you accidentally use another tool, use `manage_ugui` to "fix" it by targeting the object with a modification.
+- **TMP Support**: Use `fontSize`, `text`, and `alignment`. The tool automatically maps legacy alignment names to TextMeshPro equivalents.
+- **Preserve Aspect**: By default, `manage_ugui` enables `preserveAspect` when assigning a new sprite to an image.
