@@ -28,7 +28,9 @@ namespace MCPForUnity.Editor.Tools
         public static object HandleCommand(JObject @params)
         {
             var p = new ToolParams(@params);
-            string action = p.RequireString("action");
+            var actionResult = p.GetRequired("action");
+            if (!actionResult.IsSuccess) return new ErrorResponse(actionResult.ErrorMessage);
+            string action = actionResult.Value;
 
             switch (action.ToLowerInvariant())
             {
@@ -46,9 +48,12 @@ namespace MCPForUnity.Editor.Tools
 
         private static object CreateElement(ToolParams p)
         {
-            string type = p.RequireString("type");
-            string name = p.GetString("name");
-            JToken parentToken = p.GetToken("parent");
+            var typeResult = p.GetRequired("type");
+            if (!typeResult.IsSuccess) return new ErrorResponse(typeResult.ErrorMessage);
+            string type = typeResult.Value;
+
+            string name = p.Get("name");
+            JToken parentToken = p.GetRaw("parent");
 
             // 1. Find Parent (Intelligent)
             GameObject parentGo = null;
@@ -151,7 +156,7 @@ namespace MCPForUnity.Editor.Tools
 
         private static object ModifyElement(ToolParams p)
         {
-            JToken targetToken = p.GetToken("target");
+            JToken targetToken = p.GetRaw("target");
             GameObject targetGo = MCPForUnity.Editor.Tools.GameObjects.ManageGameObjectCommon.FindObjectInternal(targetToken, "by_id_or_name_or_path");
             
             if (targetGo == null) return new ErrorResponse("Target UI element not found.");
@@ -173,28 +178,28 @@ namespace MCPForUnity.Editor.Tools
         private static void ApplyLayoutProperties(RectTransform rt, ToolParams p)
         {
             // Anchor Preset
-            string preset = p.GetString("anchor_preset", "anchorPreset")?.ToLowerInvariant();
+            string preset = p.Get("anchor_preset")?.ToLowerInvariant();
             if (!string.IsNullOrEmpty(preset))
             {
                 ApplyAnchorPreset(rt, preset);
             }
 
             // Direct Transform Properties
-            Vector2? sizeDelta = VectorParsing.ParseVector2(p.GetToken("size_delta", "sizeDelta"));
+            Vector2? sizeDelta = VectorParsing.ParseVector2(p.GetRaw("size_delta"));
             if (sizeDelta.HasValue) rt.sizeDelta = sizeDelta.Value;
 
-            Vector2? pos = VectorParsing.ParseVector2(p.GetToken("anchored_position", "anchoredPosition"));
+            Vector2? pos = VectorParsing.ParseVector2(p.GetRaw("anchored_position"));
             if (pos.HasValue) rt.anchoredPosition = pos.Value;
 
-            float? pivotX = p.GetFloat("pivot_x", "pivotX");
-            float? pivotY = p.GetFloat("pivot_y", "pivotY");
+            float? pivotX = p.GetFloat("pivot_x");
+            float? pivotY = p.GetFloat("pivot_y");
             if (pivotX.HasValue || pivotY.HasValue)
             {
                 rt.pivot = new Vector2(pivotX ?? rt.pivot.x, pivotY ?? rt.pivot.y);
             }
 
             // Layout Group Support
-            string layoutGroup = p.GetString("layout_group", "layoutGroup");
+            string layoutGroup = p.Get("layout_group");
             if (!string.IsNullOrEmpty(layoutGroup))
             {
                 ApplyLayoutGroup(rt.gameObject, layoutGroup, p);
@@ -228,32 +233,32 @@ namespace MCPForUnity.Editor.Tools
                 float? spacing = p.GetFloat("spacing");
                 if (spacing.HasValue) group.spacing = spacing.Value;
 
-                string align = p.GetString("child_alignment", "childAlignment");
+                string align = p.Get("child_alignment");
                 if (!string.IsNullOrEmpty(align) && Enum.TryParse<TextAnchor>(align, true, out var result))
                     group.childAlignment = result;
 
-                bool? forceExpandW = p.GetBool("child_force_expand_width", "childForceExpandWidth");
+                bool? forceExpandW = p.GetBool("child_force_expand_width");
                 if (forceExpandW.HasValue) group.childForceExpandWidth = forceExpandW.Value;
                 
-                bool? forceExpandH = p.GetBool("child_force_expand_height", "childForceExpandHeight");
+                bool? forceExpandH = p.GetBool("child_force_expand_height");
                 if (forceExpandH.HasValue) group.childForceExpandHeight = forceExpandH.Value;
 
-                bool? controlW = p.GetBool("child_control_width", "childControlWidth");
+                bool? controlW = p.GetBool("child_control_width");
                 if (controlW.HasValue) group.childControlWidth = controlW.Value;
 
-                bool? controlH = p.GetBool("child_control_height", "childControlHeight");
+                bool? controlH = p.GetBool("child_control_height");
                 if (controlH.HasValue) group.childControlHeight = controlH.Value;
             }
 
             if (grid != null)
             {
-                Vector2? cellSize = VectorParsing.ParseVector2(p.GetToken("cell_size", "cellSize"));
+                Vector2? cellSize = VectorParsing.ParseVector2(p.GetRaw("cell_size"));
                 if (cellSize.HasValue) grid.cellSize = cellSize.Value;
 
-                Vector2? spacing = VectorParsing.ParseVector2(p.GetToken("spacing"));
+                Vector2? spacing = VectorParsing.ParseVector2(p.GetRaw("spacing"));
                 if (spacing.HasValue) grid.spacing = spacing.Value;
 
-                string align = p.GetString("child_alignment", "childAlignment");
+                string align = p.Get("child_alignment");
                 if (!string.IsNullOrEmpty(align) && Enum.TryParse<TextAnchor>(align, true, out var result))
                     grid.childAlignment = result;
             }
@@ -262,7 +267,7 @@ namespace MCPForUnity.Editor.Tools
         private static void ApplyVisualProperties(GameObject go, ToolParams p)
         {
             // Color Extraction (Shared)
-            Color? mainColor = ParseColor(p.GetString("color"));
+            Color? mainColor = ParseColor(p.Get("color"));
 
             // Image / RawImage / Panel properties
             Image img = go.GetComponent<Image>();
@@ -270,7 +275,7 @@ namespace MCPForUnity.Editor.Tools
             
             if (img != null)
             {
-                string spritePath = p.GetString("sprite");
+                string spritePath = p.Get("sprite");
                 if (!string.IsNullOrEmpty(spritePath))
                 {
                     img.sprite = AssetDatabase.LoadAssetAtPath<Sprite>(AssetPathUtility.SanitizeAssetPath(spritePath));
@@ -280,15 +285,15 @@ namespace MCPForUnity.Editor.Tools
                 
                 if (mainColor.HasValue) img.color = mainColor.Value;
                 
-                bool? raycast = p.GetBool("raycast_target", "raycastTarget");
+                bool? raycast = p.GetBool("raycast_target");
                 if (raycast.HasValue) img.raycastTarget = raycast.Value;
                 
-                bool? preserve = p.GetBool("preserve_aspect", "preserveAspect");
+                bool? preserve = p.GetBool("preserve_aspect");
                 if (preserve.HasValue) img.preserveAspect = preserve.Value;
             }
             else if (rawImg != null)
             {
-                string texPath = p.GetString("texture");
+                string texPath = p.Get("texture");
                 if (!string.IsNullOrEmpty(texPath))
                 {
                     rawImg.texture = AssetDatabase.LoadAssetAtPath<Texture>(AssetPathUtility.SanitizeAssetPath(texPath));
@@ -298,10 +303,10 @@ namespace MCPForUnity.Editor.Tools
             }
 
             // Text properties
-            string text = p.GetString("text");
-            int? fontSize = p.GetInt("font_size", "fontSize");
-            string fontPath = p.GetString("font");
-            string align = p.GetString("alignment");
+            string text = p.Get("text");
+            int? fontSize = p.GetInt("font_size");
+            string fontPath = p.Get("font");
+            string align = p.Get("alignment");
 
             // Legacy Text
             Text txt = go.GetComponent<Text>();
@@ -341,7 +346,7 @@ namespace MCPForUnity.Editor.Tools
                         if (tmproAlign != null) SetPropertyValue(tmpro, "alignment", tmproAlign);
                     }
 
-                    bool? autoSize = p.GetBool("auto_size", "autoSize") ?? p.GetBool("enableAutoSizing");
+                    bool? autoSize = p.GetBool("auto_size");
                     if (autoSize.HasValue) SetPropertyValue(tmpro, "enableAutoSizing", autoSize.Value);
                 }
             }
